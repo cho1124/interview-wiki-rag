@@ -1,11 +1,14 @@
+import os
+
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    # Mode: "cloud" | "local" | "auto"
+    # Mode: "cloud" | "local" | "spaces" | "auto"
     # cloud: OpenAI/Anthropic/Supabase (기존 동작)
     # local: Ollama + 로컬 임베딩
-    # auto: API 키 존재 시 cloud, 없으면 local
+    # spaces: HuggingFace Inference API + 로컬 sentence-transformers
+    # auto: SPACE_ID 감지 시 spaces, API 키 존재 시 cloud, 없으면 local
     mode: str = "auto"
 
     # Supabase (local 모드에서는 불필요)
@@ -23,6 +26,10 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "gemma2:9b-instruct"
     local_embedding_model: str = "all-MiniLM-L6-v2"
+
+    # HuggingFace Spaces Settings
+    hf_token: str = ""
+    hf_model: str = "mistralai/Mistral-7B-Instruct-v0.3"
 
     # Embedding
     embedding_model: str = "text-embedding-3-small"
@@ -68,12 +75,19 @@ class Settings(BaseSettings):
     model_config = {"env_file": ".env"}
 
     def _resolve_mode(self) -> str:
-        """mode 설정 + API 키 존재 여부에 따라 'cloud' 또는 'local' 반환"""
+        """mode 설정 + 환경 감지에 따라 'cloud' / 'local' / 'spaces' 반환"""
         if self.mode == "cloud":
             return "cloud"
         elif self.mode == "local":
             return "local"
+        elif self.mode == "spaces":
+            return "spaces"
         else:  # auto
+            # HuggingFace Spaces 환경 자동 감지
+            if os.environ.get("SPACE_ID"):
+                return "spaces"
+            if self.hf_token and not self.openai_api_key:
+                return "spaces"
             if self.openai_api_key:
                 return "cloud"
             return "local"
@@ -81,6 +95,16 @@ class Settings(BaseSettings):
     def get_llm(self, complexity: str = "light"):
         """난이도에 따라 적절한 LLM 인스턴스 반환"""
         resolved = self._resolve_mode()
+
+        if resolved == "spaces":
+            from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
+            llm = HuggingFaceEndpoint(
+                repo_id=self.hf_model,
+                huggingfacehub_api_token=self.hf_token or os.environ.get("HF_TOKEN", ""),
+                temperature=self.llm_temperature,
+                max_new_tokens=self.token_budget_output,
+            )
+            return ChatHuggingFace(llm=llm)
 
         if resolved == "local":
             from langchain_ollama import ChatOllama
@@ -118,6 +142,8 @@ class Settings(BaseSettings):
     def get_model_name(self, complexity: str = "light") -> str:
         """난이도에 따른 모델 이름 반환."""
         resolved = self._resolve_mode()
+        if resolved == "spaces":
+            return self.hf_model
         if resolved == "local":
             return self.ollama_model
         if complexity == "heavy":
@@ -128,7 +154,8 @@ class Settings(BaseSettings):
         """임베딩 모델 인스턴스 반환"""
         resolved = self._resolve_mode()
 
-        if resolved == "local":
+        if resolved in ("local", "spaces"):
+            # spaces 모드에서도 로컬 임베딩 사용 (무료)
             from langchain_huggingface import HuggingFaceEmbeddings
             return HuggingFaceEmbeddings(
                 model_name=self.local_embedding_model,

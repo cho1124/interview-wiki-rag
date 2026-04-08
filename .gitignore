@@ -5,3 +5,5 @@ __pycache__/
 node_modules/
 logs/
 .claude/
+data/chroma/
+data/chunks.json
