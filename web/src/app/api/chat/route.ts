@@ -7,7 +7,21 @@ import { searchChunks } from '@/lib/search';
 export const maxDuration = 30;
 
 export async function POST(req: Request) {
-  const { messages } = await req.json();
+  const { messages: rawMessages } = await req.json();
+
+  // Vercel AI SDK v6: parts 형태 → content 형태로 변환
+  const messages = rawMessages.map((m: Record<string, unknown>) => {
+    if (m.content) return m;
+    if (Array.isArray(m.parts)) {
+      const text = (m.parts as Array<{ type: string; text?: string }>)
+        .filter((p) => p.type === 'text')
+        .map((p) => p.text || '')
+        .join('');
+      return { role: m.role, content: text };
+    }
+    return { role: m.role, content: '' };
+  });
+
   const lastMessage = messages[messages.length - 1]?.content || '';
 
   // 검색
