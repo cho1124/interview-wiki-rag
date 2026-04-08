@@ -29,7 +29,7 @@ export async function POST(req: Request) {
   let context = '';
   if (chunks.length > 0) {
     context = chunks
-      .map((c: { heading?: string; content: string }, i: number) =>
+      .map((c, i) =>
         `[${i + 1}] ${c.heading ? `(${c.heading}) ` : ''}${c.content}`
       )
       .join('\n\n');
