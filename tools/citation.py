@@ -135,6 +135,30 @@ def format_citations_footer(
     return "\n".join(lines)
 
 
+def enforce_citation_quality(validation: dict) -> dict:
+    """인용 품질에 따라 후속 조치를 결정한다.
+
+    Returns:
+        dict with keys:
+            - action: "accept" | "warn" | "regenerate"
+            - reason: str
+    """
+    coverage = validation.get("citation_coverage", 0)
+    invalid = validation.get("invalid_citations", [])
+    uncited = validation.get("uncited_sentences", [])
+
+    if invalid:
+        return {"action": "warn", "reason": f"유효하지 않은 인용 {len(invalid)}건 감지"}
+
+    if coverage < 0.3:
+        return {"action": "regenerate", "reason": f"인용 커버리지 {coverage:.0%}로 매우 낮음"}
+
+    if coverage < 0.5:
+        return {"action": "warn", "reason": f"인용 커버리지 {coverage:.0%}로 부족"}
+
+    return {"action": "accept", "reason": ""}
+
+
 def process_response_with_citations(
     response_text: str,
     chunks: list[dict],
@@ -150,10 +174,12 @@ def process_response_with_citations(
             - response: 인용 목록이 추가된 최종 응답
             - citations: 인용 메타데이터
             - validation: 인용 검증 결과
+            - enforcement: 인용 품질 후속 조치
     """
     citation_map = build_citation_map(chunks)
     used_citations = extract_citations(response_text)
     validation = validate_citations(response_text, citation_map)
+    enforcement = enforce_citation_quality(validation)
     footer = format_citations_footer(citation_map, used_citations)
 
     final_response = response_text
@@ -168,6 +194,7 @@ def process_response_with_citations(
             if num in citation_map
         },
         "validation": validation,
+        "enforcement": enforcement,
     }
 
 

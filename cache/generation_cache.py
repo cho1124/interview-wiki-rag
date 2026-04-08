@@ -17,20 +17,32 @@ class GenerationCache:
         self._ttl = ttl_seconds
 
     @staticmethod
-    def _make_key(query: str, chunk_ids: list[str], model: str) -> str:
-        """쿼리 + 정렬된 청크 ID + 모델로 캐시 키 생성."""
+    def _make_key(
+        query: str,
+        chunk_ids: list[str],
+        model: str,
+        prompt_version: str = "v1",
+    ) -> str:
+        """쿼리 + 청크 ID(점수 순서 유지) + 모델 + 프롬프트 버전으로 캐시 키 생성."""
         normalized_query = " ".join(query.lower().strip().split())
         key_data = {
             "query": normalized_query,
-            "chunk_ids": sorted(chunk_ids),
+            "chunk_ids": chunk_ids,  # 점수 순서 유지 (정렬하지 않음)
             "model": model,
+            "prompt_version": prompt_version,
         }
         raw = json.dumps(key_data, sort_keys=True, ensure_ascii=False)
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
-    def get(self, query: str, chunk_ids: list[str], model: str) -> dict | None:
+    def get(
+        self,
+        query: str,
+        chunk_ids: list[str],
+        model: str,
+        prompt_version: str = "v1",
+    ) -> dict | None:
         """캐시에서 생성 결과 조회."""
-        key = self._make_key(query, chunk_ids, model)
+        key = self._make_key(query, chunk_ids, model, prompt_version)
         entry = self._store.get(key)
         if entry is None:
             return None
@@ -39,9 +51,16 @@ class GenerationCache:
             return None
         return entry["value"]
 
-    def set(self, query: str, chunk_ids: list[str], model: str, value: dict) -> None:
+    def set(
+        self,
+        query: str,
+        chunk_ids: list[str],
+        model: str,
+        value: dict,
+        prompt_version: str = "v1",
+    ) -> None:
         """생성 결과를 캐시에 저장."""
-        key = self._make_key(query, chunk_ids, model)
+        key = self._make_key(query, chunk_ids, model, prompt_version)
         self._store[key] = {
             "value": value,
             "timestamp": time.time(),

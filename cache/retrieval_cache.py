@@ -2,6 +2,7 @@
 
 동일한 쿼리+파라미터 조합의 검색 결과를 재사용.
 임베딩 API 호출을 절약한다.
+키 버전: query + params + top_k + threshold + vector_weight 포함.
 """
 
 import hashlib
@@ -18,16 +19,36 @@ class RetrievalCache:
         self._ttl = ttl_seconds
 
     @staticmethod
-    def _make_key(query: str, params: dict | None = None) -> str:
-        """쿼리 + 검색 파라미터로 캐시 키 생성."""
+    def _make_key(
+        query: str,
+        params: dict | None = None,
+        top_k: int | None = None,
+        threshold: float | None = None,
+        vector_weight: float | None = None,
+    ) -> str:
+        """쿼리 + 검색 파라미터 + retrieval 설정으로 캐시 키 생성."""
         normalized = " ".join(query.lower().strip().split())
         key_data = {"query": normalized, "params": params or {}}
+        # retrieval 설정을 키에 포함
+        if top_k is not None:
+            key_data["top_k"] = top_k
+        if threshold is not None:
+            key_data["threshold"] = threshold
+        if vector_weight is not None:
+            key_data["vector_weight"] = vector_weight
         raw = json.dumps(key_data, sort_keys=True, ensure_ascii=False)
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
-    def get(self, query: str, params: dict | None = None) -> list[dict] | None:
+    def get(
+        self,
+        query: str,
+        params: dict | None = None,
+        top_k: int | None = None,
+        threshold: float | None = None,
+        vector_weight: float | None = None,
+    ) -> list[dict] | None:
         """캐시에서 검색 결과 조회."""
-        key = self._make_key(query, params)
+        key = self._make_key(query, params, top_k, threshold, vector_weight)
         entry = self._store.get(key)
         if entry is None:
             return None
@@ -36,9 +57,17 @@ class RetrievalCache:
             return None
         return entry["value"]
 
-    def set(self, query: str, chunks: list[dict], params: dict | None = None) -> None:
+    def set(
+        self,
+        query: str,
+        chunks: list[dict],
+        params: dict | None = None,
+        top_k: int | None = None,
+        threshold: float | None = None,
+        vector_weight: float | None = None,
+    ) -> None:
         """검색 결과를 캐시에 저장."""
-        key = self._make_key(query, params)
+        key = self._make_key(query, params, top_k, threshold, vector_weight)
         self._store[key] = {
             "value": chunks,
             "timestamp": time.time(),

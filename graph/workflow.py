@@ -34,35 +34,28 @@ def router_node(state: AgentState) -> dict:
     }
 
 
-def _run_agent(state: AgentState, create_fn) -> dict:
-    """공통 에이전트 실행 로직: 도구 호출 → 최종 응답 생성."""
+def _run_agent(state: AgentState, create_fn, max_iterations: int = 5) -> dict:
+    """공통 에이전트 실행 로직: 도구 호출 while loop → 최종 응답 생성."""
     complexity = state.get("complexity", "light")
     llm_with_tools, system_msg = create_fn(complexity)
 
     messages = [system_msg, HumanMessage(content=state["query"])]
 
-    # 첫 번째 호출: 도구 사용 여부 결정
-    response = llm_with_tools.invoke(messages)
-    messages.append(response)
+    for _ in range(max_iterations):
+        response = llm_with_tools.invoke(messages)
+        messages.append(response)
 
-    # 도구 호출이 있으면 실행
-    if response.tool_calls:
+        if not response.tool_calls:
+            break
+
         from langchain_core.messages import ToolMessage
 
         for tool_call in response.tool_calls:
-            tool_name = tool_call["name"]
-            tool_args = tool_call["args"]
-
-            # 도구 실행
-            tool_fn = _get_tool_fn(tool_name)
-            tool_result = tool_fn.invoke(tool_args)
-
+            tool_fn = _get_tool_fn(tool_call["name"])
+            tool_result = tool_fn.invoke(tool_call["args"])
             messages.append(
                 ToolMessage(content=str(tool_result), tool_call_id=tool_call["id"])
             )
-
-        # 도구 결과를 바탕으로 최종 응답 생성
-        response = llm_with_tools.invoke(messages)
 
     return {
         "response": response.content,
@@ -95,6 +88,8 @@ def search_node(state: AgentState) -> dict:
     from tools.citation import process_response_with_citations
     from tools.error_handler import SearchError
 
+    from config import settings as cfg
+
     query = state["query"]
     complexity = state.get("complexity", "light")
     metrics = log_query(query)
@@ -105,7 +100,7 @@ def search_node(state: AgentState) -> dict:
 
     try:
         # --- L1 캐시: 쿼리 완전 일치 ---
-        cached_response = cache.l1.get(query)
+        cached_response = cache.l1.get(query, complexity=complexity, model=cfg.get_model_name(complexity), prompt_version=cfg.PROMPT_VERSION)
         if cached_response:
             print("  [Cache] L1 hit")
             metrics.set_cache_hit("l1")
@@ -125,7 +120,13 @@ def search_node(state: AgentState) -> dict:
 
         # --- L2 캐시: 검색 결과 ---
         metrics.start_search()
-        search_params = {"category": None}
+        from config import settings as cfg
+        search_params = {
+            "category": None,
+            "top_k": cfg.top_k,
+            "threshold": cfg.sufficiency_low_threshold,
+            "vector_weight": cfg.hybrid_vector_weight,
+        }
         cached_chunks = cache.l2.get(query, search_params)
 
         if cached_chunks is not None:
@@ -168,7 +169,6 @@ def search_node(state: AgentState) -> dict:
         context = build_context_from_chunks(filtered_chunks)
 
         # --- L3 캐시: 생성 결과 ---
-        from config import settings as cfg
         model_name = cfg.get_model_name(complexity)
         chunk_ids = [c.get("content_hash", str(i)) for i, c in enumerate(filtered_chunks)]
 
@@ -217,9 +217,23 @@ def search_node(state: AgentState) -> dict:
         metrics.end_generation()
         metrics.set_tokens(_estimate_tokens(raw_response))
 
-        # --- 인용 처리 ---
+        # --- 인용 처리 + 강제 ---
         citation_result = process_response_with_citations(raw_response, filtered_chunks)
+        enforcement = citation_result.get("enforcement", {})
+
+        # citation 강제: 커버리지 낮으면 1회 재생성 시도
+        if enforcement.get("action") == "regenerate":
+            print(f"  [Citation] 재생성 시도: {enforcement.get('reason')}")
+            retry_response = llm_with_tools.invoke(messages)
+            citation_result = process_response_with_citations(retry_response.content, filtered_chunks)
+            enforcement = citation_result.get("enforcement", {})
+
         final_response = uncertainty_prefix + citation_result["response"]
+
+        # citation 경고 추가
+        if enforcement.get("action") == "warn":
+            final_response = f"⚠️ {enforcement.get('reason', '')}\n\n" + final_response
+
         metrics.set_citation_count(len(citation_result.get("citations", {})))
 
         # --- 캐시 저장 ---
@@ -230,7 +244,7 @@ def search_node(state: AgentState) -> dict:
             "gate_status": gate_status,
             "confidence": gate_result["confidence"],
         }
-        cache.l1.set(query, cache_value)
+        cache.l1.set(query, cache_value, complexity=complexity, model=model_name, prompt_version=cfg.PROMPT_VERSION)
         cache.l3.set(query, chunk_ids, model_name, cache_value)
 
         metrics.save()
@@ -268,8 +282,14 @@ def search_node(state: AgentState) -> dict:
 
 
 def _estimate_tokens(text: str) -> int:
-    """간단한 토큰 수 추정."""
-    return max(1, len(text) // 3)
+    """tiktoken 기반 정확한 토큰 수 추정."""
+    try:
+        import tiktoken
+        enc = tiktoken.encoding_for_model("gpt-4o-mini")
+        return len(enc.encode(text))
+    except Exception:
+        # fallback: 한국어+영어 혼합 기준 보수적 추정
+        return max(1, len(text) // 2)
 
 
 def quiz_node(state: AgentState) -> dict:

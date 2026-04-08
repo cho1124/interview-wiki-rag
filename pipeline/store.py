@@ -2,8 +2,10 @@
 
 v2: parent_content, content_hash, parent_id 포함 저장.
 chunk_metadata 테이블에 섹션 경로 매핑도 저장.
+저장 후 관련 토픽의 캐시를 무효화한다.
 """
 
+from cache.manager import get_cache_manager
 from pipeline.fetch import get_supabase
 
 
@@ -75,5 +77,10 @@ def store_chunks(chunks: list[dict]) -> int:
     # 배치 삽입: chunk_metadata
     if metadata_rows:
         supabase.table("chunk_metadata").insert(metadata_rows).execute()
+
+    # 저장된 토픽의 캐시 무효화
+    cache_manager = get_cache_manager()
+    for _category_id, topic_id in topic_ids_seen:
+        cache_manager.invalidate_for_topic(topic_id)
 
     return len(rows)

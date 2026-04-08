@@ -1,10 +1,19 @@
 """라우터 에이전트: 사용자 의도를 분류하고 적절한 전문 에이전트를 선택한다."""
 
+import logging
+
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_core.output_parsers import JsonOutputParser
 
 from config import settings
 
+logger = logging.getLogger(__name__)
+
+# 유효한 에이전트 타입 및 난이도
+VALID_AGENTS = {"search", "quiz", "explain", "compare"}
+VALID_COMPLEXITIES = {"light", "heavy"}
+
+FALLBACK_RESULT = {"agent_type": "search", "complexity": "light", "reason": "fallback"}
 
 SYSTEM_PROMPT = """당신은 면접 준비 AI 시스템의 라우터입니다.
 사용자의 질문을 분석하여 적절한 전문 에이전트를 선택합니다.
@@ -44,11 +53,28 @@ def route_query(query: str) -> dict:
     ]
 
     response = llm.invoke(messages)
-    result = parser.invoke(response)
 
-    # 기본값 보장
+    # JSON 파싱 실패 시 안전한 기본값으로 폴백
+    try:
+        result = parser.invoke(response)
+    except Exception:
+        logger.warning("라우터 JSON 파싱 실패, 기본값(search/light)으로 폴백")
+        return dict(FALLBACK_RESULT)
+
+    # 에이전트 타입 유효성 검증
+    agent_type = result.get("agent_type", "search")
+    if agent_type not in VALID_AGENTS:
+        logger.warning("유효하지 않은 agent_type=%s, 'search'로 폴백", agent_type)
+        agent_type = "search"
+
+    # 난이도 유효성 검증
+    complexity = result.get("complexity", "light")
+    if complexity not in VALID_COMPLEXITIES:
+        logger.warning("유효하지 않은 complexity=%s, 'light'로 폴백", complexity)
+        complexity = "light"
+
     return {
-        "agent_type": result.get("agent_type", "search"),
-        "complexity": result.get("complexity", "light"),
+        "agent_type": agent_type,
+        "complexity": complexity,
         "reason": result.get("reason", ""),
     }

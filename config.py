@@ -2,9 +2,15 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    # Supabase
-    supabase_url: str
-    supabase_service_key: str
+    # Mode: "cloud" | "local" | "auto"
+    # cloud: OpenAI/Anthropic/Supabase (기존 동작)
+    # local: Ollama + 로컬 임베딩
+    # auto: API 키 존재 시 cloud, 없으면 local
+    mode: str = "auto"
+
+    # Supabase (local 모드에서는 불필요)
+    supabase_url: str = ""
+    supabase_service_key: str = ""
 
     # LLM - 난이도 기반 모델 라우팅
     llm_light_provider: str = "openai"
@@ -13,9 +19,14 @@ class Settings(BaseSettings):
     llm_heavy_model: str = "claude-sonnet-4-20250514"
     llm_temperature: float = 0.3
 
+    # Local Model Settings (Ollama)
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "gemma2:9b-instruct"
+    local_embedding_model: str = "all-MiniLM-L6-v2"
+
     # Embedding
     embedding_model: str = "text-embedding-3-small"
-    embedding_dimensions: int = 1536
+    embedding_dimensions: int = 384
 
     # Chunking
     chunk_size: int = 500
@@ -47,14 +58,39 @@ class Settings(BaseSettings):
     cache_retrieval_ttl: int = 1800   # L2: 30분
     cache_generation_ttl: int = 3600  # L3: 1시간
 
+    # Prompt Version (캐시 키 버전 관리용)
+    PROMPT_VERSION: str = "v1"
+
     # API Keys
     openai_api_key: str = ""
     anthropic_api_key: str = ""
 
     model_config = {"env_file": ".env"}
 
+    def _resolve_mode(self) -> str:
+        """mode 설정 + API 키 존재 여부에 따라 'cloud' 또는 'local' 반환"""
+        if self.mode == "cloud":
+            return "cloud"
+        elif self.mode == "local":
+            return "local"
+        else:  # auto
+            if self.openai_api_key:
+                return "cloud"
+            return "local"
+
     def get_llm(self, complexity: str = "light"):
         """난이도에 따라 적절한 LLM 인스턴스 반환"""
+        resolved = self._resolve_mode()
+
+        if resolved == "local":
+            from langchain_ollama import ChatOllama
+            return ChatOllama(
+                base_url=self.ollama_base_url,
+                model=self.ollama_model,
+                temperature=self.llm_temperature,
+            )
+
+        # cloud 모드
         if complexity == "heavy":
             provider = self.llm_heavy_provider
             model = self.llm_heavy_model
@@ -81,12 +117,24 @@ class Settings(BaseSettings):
 
     def get_model_name(self, complexity: str = "light") -> str:
         """난이도에 따른 모델 이름 반환."""
+        resolved = self._resolve_mode()
+        if resolved == "local":
+            return self.ollama_model
         if complexity == "heavy":
             return self.llm_heavy_model
         return self.llm_light_model
 
     def get_embeddings(self):
         """임베딩 모델 인스턴스 반환"""
+        resolved = self._resolve_mode()
+
+        if resolved == "local":
+            from langchain_huggingface import HuggingFaceEmbeddings
+            return HuggingFaceEmbeddings(
+                model_name=self.local_embedding_model,
+            )
+
+        # cloud 모드
         from langchain_openai import OpenAIEmbeddings
         return OpenAIEmbeddings(
             model=self.embedding_model,

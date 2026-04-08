@@ -31,9 +31,14 @@ class CacheManager:
     def invalidate_for_topic(self, topic_id: str) -> None:
         """특정 토픽 관련 캐시 무효화.
 
-        현재는 전체 무효화로 처리 (정밀 무효화는 향후 구현).
+        L1: topic_ids 메타데이터 기반 정밀 무효화.
+        L2, L3: 메타데이터 미지원이므로 전체 무효화.
         """
-        self.invalidate_all()
+        # L1: topic_ids 메타데이터로 정밀 무효화
+        self.l1.invalidate_by_topic(topic_id)
+        # L2, L3: 아직 토픽 메타데이터가 없으므로 전체 무효화
+        self.l2.invalidate_all()
+        self.l3.invalidate_all()
 
     def stats(self) -> dict:
         """캐시 통계 반환."""

@@ -133,3 +133,39 @@ BEGIN
     LIMIT match_count;
 END;
 $$;
+
+-- match_chunks for backward compat (vector-only search)
+CREATE OR REPLACE FUNCTION match_chunks(
+    query_embedding VECTOR(384),
+    match_threshold FLOAT DEFAULT 0.7,
+    match_count INT DEFAULT 5,
+    filter_category TEXT DEFAULT NULL
+)
+RETURNS TABLE (
+    id BIGINT,
+    topic_id TEXT,
+    category_id TEXT,
+    chunk_index INTEGER,
+    content TEXT,
+    heading TEXT,
+    tags TEXT[],
+    parent_id TEXT,
+    parent_content TEXT,
+    content_hash TEXT,
+    similarity FLOAT
+)
+LANGUAGE plpgsql AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        tc.id, tc.topic_id, tc.category_id, tc.chunk_index,
+        tc.content, tc.heading, tc.tags,
+        tc.parent_id, tc.parent_content, tc.content_hash,
+        (1 - (tc.embedding <=> query_embedding))::FLOAT AS similarity
+    FROM topic_chunks tc
+    WHERE (filter_category IS NULL OR tc.category_id = filter_category)
+      AND (1 - (tc.embedding <=> query_embedding)) > match_threshold
+    ORDER BY tc.embedding <=> query_embedding
+    LIMIT match_count;
+END;
+$$;
