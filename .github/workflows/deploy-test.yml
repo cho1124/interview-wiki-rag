@@ -1,0 +1,130 @@
+name: 배포 후 런타임 검증
+
+on:
+  deployment_status:
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: '테스트할 URL (예: https://interview-wiki-rag.pages.dev)'
+        required: true
+        default: 'https://interview-wiki-rag.pages.dev'
+
+env:
+  TARGET_URL: ${{ github.event.inputs.target_url || 'https://interview-wiki-rag.pages.dev' }}
+
+jobs:
+  runtime-verification:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event.deployment_status.state == 'success'
+
+    steps:
+      - name: 1. 페이지 로드 확인
+        run: |
+          echo "=== 페이지 로드 테스트 ==="
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$TARGET_URL")
+          if [ "$STATUS" != "200" ]; then
+            echo "FAIL: 페이지 HTTP $STATUS"
+            exit 1
+          fi
+          echo "PASS: 페이지 HTTP 200"
+
+      - name: 2. API 엔드포인트 존재 확인
+        run: |
+          echo "=== API 엔드포인트 테스트 ==="
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$TARGET_URL/api/chat" \
+            -H "Content-Type: application/json" \
+            -d '{"messages":[{"role":"user","content":"test"}]}')
+          if [ "$STATUS" -ge 500 ] && [ "$STATUS" -ne 503 ]; then
+            echo "FAIL: API HTTP $STATUS (서버 에러)"
+            exit 1
+          fi
+          echo "PASS: API 응답 HTTP $STATUS"
+
+      - name: 3. 정상 질문 — 스트리밍 응답 확인
+        run: |
+          echo "=== 정상 질문 스트리밍 테스트 ==="
+          RESPONSE=$(curl -s --max-time 30 -X POST "$TARGET_URL/api/chat" \
+            -H "Content-Type: application/json" \
+            -d '{"messages":[{"role":"user","content":"가상 DOM이 뭐야?"}]}')
+
+          if [ -z "$RESPONSE" ]; then
+            echo "FAIL: 응답이 비어있음"
+            exit 1
+          fi
+
+          RESPONSE_LEN=${#RESPONSE}
+          echo "응답 길이: ${RESPONSE_LEN}자"
+
+          if [ "$RESPONSE_LEN" -lt 20 ]; then
+            echo "FAIL: 응답이 너무 짧음 (${RESPONSE_LEN}자)"
+            exit 1
+          fi
+          echo "PASS: 스트리밍 응답 수신 (${RESPONSE_LEN}자)"
+
+      - name: 4. 검색 0건 케이스 — 에러 처리 확인
+        run: |
+          echo "=== 검색 0건 케이스 ==="
+          RESPONSE=$(curl -s --max-time 30 -X POST "$TARGET_URL/api/chat" \
+            -H "Content-Type: application/json" \
+            -d '{"messages":[{"role":"user","content":"xyzzy1234 비존재토픽 qwerty"}]}')
+
+          if [ -z "$RESPONSE" ]; then
+            echo "WARN: 응답 비어있음 — 에러 처리 미구현 가능"
+          else
+            echo "응답: ${RESPONSE:0:200}"
+            echo "PASS: 검색 0건에서도 응답 반환"
+          fi
+
+      - name: 5. 빈 메시지 — 입력 검증
+        run: |
+          echo "=== 빈 메시지 테스트 ==="
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 -X POST "$TARGET_URL/api/chat" \
+            -H "Content-Type: application/json" \
+            -d '{"messages":[]}')
+          echo "빈 메시지 HTTP: $STATUS"
+
+          if [ "$STATUS" -ge 500 ]; then
+            echo "FAIL: 빈 메시지에서 서버 크래시 ($STATUS)"
+            exit 1
+          fi
+          echo "PASS: 빈 메시지 처리 안정적"
+
+      - name: 6. 긴 메시지 — 입력 제한 확인
+        run: |
+          echo "=== 긴 메시지 테스트 ==="
+          LONG_MSG=$(python3 -c "print('테스트 ' * 500)")
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 -X POST "$TARGET_URL/api/chat" \
+            -H "Content-Type: application/json" \
+            -d "{\"messages\":[{\"role\":\"user\",\"content\":\"$LONG_MSG\"}]}")
+          echo "긴 메시지 HTTP: $STATUS"
+
+          if [ "$STATUS" -ge 500 ]; then
+            echo "FAIL: 긴 메시지에서 서버 크래시 ($STATUS)"
+            exit 1
+          fi
+          echo "PASS: 긴 메시지 처리 안정적"
+
+      - name: 7. 응답 시간 측정
+        run: |
+          echo "=== 응답 시간 측정 ==="
+          TIME=$(curl -s -o /dev/null -w "%{time_total}" --max-time 60 -X POST "$TARGET_URL/api/chat" \
+            -H "Content-Type: application/json" \
+            -d '{"messages":[{"role":"user","content":"React란?"}]}')
+          echo "응답 시간: ${TIME}초"
+
+          # 60초 이상이면 타임아웃
+          SECONDS=${TIME%.*}
+          if [ "${SECONDS:-0}" -ge 60 ]; then
+            echo "FAIL: 응답 시간 60초 초과"
+            exit 1
+          fi
+          echo "PASS: 응답 시간 ${TIME}초"
+
+      - name: 결과 요약
+        if: always()
+        run: |
+          echo ""
+          echo "=============================="
+          echo "  런타임 검증 완료"
+          echo "  대상: $TARGET_URL"
+          echo "=============================="
