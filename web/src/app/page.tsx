@@ -1,16 +1,11 @@
 'use client';
 
-import { useChat } from '@ai-sdk/react';
-import { useRef, useEffect, useState } from 'react';
+import { useRef, useEffect, useState, useCallback } from 'react';
 
-function getTextContent(message: { parts?: { type: string; text?: string }[]; content?: string }): string {
-  if (message.parts) {
-    return message.parts
-      .filter((p) => p.type === 'text')
-      .map((p) => p.text || '')
-      .join('');
-  }
-  return message.content || '';
+interface Message {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
 }
 
 const SUGGESTIONS = [
@@ -25,24 +20,72 @@ const SUGGESTIONS = [
 ];
 
 export default function Home() {
-  const { messages, sendMessage, status } = useChat();
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState('');
-  const isLoading = status === 'streaming' || status === 'submitted';
+  const [isLoading, setIsLoading] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  const sendMessage = useCallback(async (text: string) => {
+    if (!text.trim() || isLoading) return;
+
+    const userMsg: Message = { id: Date.now().toString(), role: 'user', content: text };
+    const assistantMsg: Message = { id: (Date.now() + 1).toString(), role: 'assistant', content: '' };
+
+    setMessages(prev => [...prev, userMsg, assistantMsg]);
+    setInputValue('');
+    setIsLoading(true);
+
+    try {
+      const allMessages = [...messages, userMsg].map(m => ({
+        role: m.role,
+        content: m.content,
+      }));
+
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: allMessages }),
+      });
+
+      if (!res.ok) throw new Error(`서버 오류: ${res.status}`);
+
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value, { stream: true });
+        setMessages(prev => {
+          const updated = [...prev];
+          const last = updated[updated.length - 1];
+          if (last.role === 'assistant') {
+            updated[updated.length - 1] = { ...last, content: last.content + chunk };
+          }
+          return updated;
+        });
+      }
+    } catch (err) {
+      setMessages(prev => {
+        const updated = [...prev];
+        const last = updated[updated.length - 1];
+        if (last.role === 'assistant') {
+          updated[updated.length - 1] = { ...last, content: `오류: ${err}` };
+        }
+        return updated;
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  }, [messages, isLoading]);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!inputValue.trim() || isLoading) return;
-    sendMessage({ text: inputValue });
-    setInputValue('');
-  };
-
-  const handleSuggestion = (q: string) => {
-    sendMessage({ text: q });
+    sendMessage(inputValue);
   };
 
   return (
@@ -64,11 +107,10 @@ export default function Home() {
       {/* Messages */}
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-3xl mx-auto px-4 py-6 space-y-4">
-          {/* Empty state */}
           {messages.length === 0 && (
             <div className="flex flex-col items-center justify-center py-16">
               <div className="w-16 h-16 bg-slate-900 rounded-2xl flex items-center justify-center mb-6">
-                <span className="text-2xl">Q</span>
+                <span className="text-2xl text-white">Q</span>
               </div>
               <h2 className="text-xl font-semibold text-slate-800 mb-2">무엇이든 물어보세요</h2>
               <p className="text-slate-500 text-sm mb-8 text-center">
@@ -78,7 +120,7 @@ export default function Home() {
                 {SUGGESTIONS.map((q) => (
                   <button
                     key={q}
-                    onClick={() => handleSuggestion(q)}
+                    onClick={() => sendMessage(q)}
                     className="px-3 py-1.5 bg-white border border-slate-200 rounded-full text-xs text-slate-600 hover:bg-slate-900 hover:text-white hover:border-slate-900 transition-all duration-200"
                   >
                     {q}
@@ -88,7 +130,6 @@ export default function Home() {
             </div>
           )}
 
-          {/* Chat messages */}
           {messages.map((m) => (
             <div
               key={m.id}
@@ -103,27 +144,26 @@ export default function Home() {
                 className={`max-w-[75%] rounded-2xl px-4 py-3 ${
                   m.role === 'user'
                     ? 'bg-slate-900 text-white'
-                    : 'bg-white border border-slate-200 text-slate-800 shadow-sm ai-message'
+                    : 'bg-white border border-slate-200 text-slate-800 shadow-sm'
                 }`}
               >
                 <div className="whitespace-pre-wrap text-sm leading-relaxed">
-                  {getTextContent(m)}
+                  {m.content || (m.role === 'assistant' && isLoading ? '' : m.content)}
                 </div>
               </div>
             </div>
           ))}
 
-          {/* Loading */}
-          {isLoading && messages[messages.length - 1]?.role === 'user' && (
+          {isLoading && messages[messages.length - 1]?.content === '' && (
             <div className="flex justify-start">
               <div className="w-7 h-7 bg-slate-900 rounded-lg flex items-center justify-center mr-2 mt-1 flex-shrink-0">
                 <span className="text-white text-xs font-bold">AI</span>
               </div>
               <div className="bg-white border border-slate-200 rounded-2xl px-4 py-3 shadow-sm">
-                <div className="dot-bounce flex space-x-1.5">
-                  <span className="w-2 h-2 bg-slate-400 rounded-full inline-block"></span>
-                  <span className="w-2 h-2 bg-slate-400 rounded-full inline-block"></span>
-                  <span className="w-2 h-2 bg-slate-400 rounded-full inline-block"></span>
+                <div className="flex space-x-1.5">
+                  <span className="w-2 h-2 bg-slate-400 rounded-full inline-block animate-bounce" style={{ animationDelay: '0ms' }}></span>
+                  <span className="w-2 h-2 bg-slate-400 rounded-full inline-block animate-bounce" style={{ animationDelay: '150ms' }}></span>
+                  <span className="w-2 h-2 bg-slate-400 rounded-full inline-block animate-bounce" style={{ animationDelay: '300ms' }}></span>
                 </div>
               </div>
             </div>
