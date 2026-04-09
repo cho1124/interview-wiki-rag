@@ -10,7 +10,7 @@
 
 ## 라이브 데모
 
-**Cloudflare Pages**: (배포 완료 후 URL 추가)
+**Cloudflare Pages**: https://interview-wiki-rag.pages.dev
 
 ## 아키텍처
 
