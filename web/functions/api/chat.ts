@@ -1,18 +1,16 @@
-export const runtime = 'edge';
-export const maxDuration = 30;
+// Cloudflare Pages Function: /api/chat
 
-const CF_ACCOUNT_ID = process.env.CF_ACCOUNT_ID || '';
-const CF_API_TOKEN = process.env.CF_API_TOKEN || '';
+interface Env {
+  CF_ACCOUNT_ID: string;
+  CF_API_TOKEN: string;
+}
+
 const CF_MODEL = '@cf/meta/llama-3.1-8b-instruct';
-
-// 면접위키 Supabase (public anon key)
 const WIKI_SUPABASE_URL = 'https://thomfxtghuszjzsljkyf.supabase.co';
 const WIKI_SUPABASE_KEY = 'sb_publishable_Xgp4YibDvNI8qkghpVwK7g_Q1gs0Ke-';
 
-// --- 면접위키에서 관련 토픽 검색 ---
 async function searchWiki(query: string): Promise<string> {
   try {
-    // 전체 토픽 가져오기 (18건이라 가벼움)
     const res = await fetch(
       `${WIKI_SUPABASE_URL}/rest/v1/topics?select=id,category_id,name,content`,
       {
@@ -28,7 +26,6 @@ async function searchWiki(query: string): Promise<string> {
       id: string; category_id: string; name: string; content: string;
     }>;
 
-    // 간단 키워드 매칭으로 관련 토픽 찾기
     const queryLower = query.toLowerCase();
     const scored = topics.map(t => {
       const text = `${t.name} ${t.content}`.toLowerCase();
@@ -36,17 +33,15 @@ async function searchWiki(query: string): Promise<string> {
       for (const word of queryLower.split(/\s+/)) {
         if (word.length < 2) continue;
         if (text.includes(word)) score += 1;
-        if (t.name.toLowerCase().includes(word)) score += 3; // 제목 매칭 가중
+        if (t.name.toLowerCase().includes(word)) score += 3;
       }
       return { ...t, score };
     });
 
     scored.sort((a, b) => b.score - a.score);
-    const top = scored.filter(t => t.score > 0).slice(0, 2); // 상위 2개
-
+    const top = scored.filter(t => t.score > 0).slice(0, 2);
     if (top.length === 0) return '';
 
-    // 토큰 절감: 각 토픽에서 관련 섹션만 추출 (최대 800자)
     return top.map((t, i) => {
       const content = extractRelevantSection(t.content, query, 800);
       return `[${i + 1}] (${t.name}) ${content}`;
@@ -56,12 +51,10 @@ async function searchWiki(query: string): Promise<string> {
   }
 }
 
-// 쿼리와 관련된 섹션만 추출
 function extractRelevantSection(content: string, query: string, maxChars: number): string {
   const sections = content.split(/\n(?=##\s)/);
   const queryWords = query.toLowerCase().split(/\s+/).filter(w => w.length >= 2);
 
-  // 각 섹션에 점수 매기기
   const scored = sections.map(s => {
     const lower = s.toLowerCase();
     let score = 0;
@@ -73,7 +66,6 @@ function extractRelevantSection(content: string, query: string, maxChars: number
 
   scored.sort((a, b) => b.score - a.score);
 
-  // 상위 섹션을 maxChars 이내로
   let result = '';
   for (const s of scored) {
     if (s.score === 0) break;
@@ -87,11 +79,13 @@ function extractRelevantSection(content: string, query: string, maxChars: number
   return result || content.slice(0, maxChars);
 }
 
-export async function POST(req: Request) {
-  const { messages: rawMessages } = await req.json();
+export const onRequestPost: PagesFunction<Env> = async (context) => {
+  const { messages: rawMessages } = await context.request.json() as { messages: Array<Record<string, unknown>> };
 
-  // parts → content 변환
-  const messages = rawMessages.map((m: Record<string, unknown>) => {
+  const CF_ACCOUNT_ID = context.env.CF_ACCOUNT_ID;
+  const CF_API_TOKEN = context.env.CF_API_TOKEN;
+
+  const messages = rawMessages.map((m) => {
     if (m.content) return m;
     if (Array.isArray(m.parts)) {
       const text = (m.parts as Array<{ type: string; text?: string }>)
@@ -103,10 +97,8 @@ export async function POST(req: Request) {
     return { role: m.role, content: '' };
   });
 
-  const lastMessage = messages[messages.length - 1]?.content || '';
-
-  // 면접위키 실시간 검색
-  const context = await searchWiki(lastMessage);
+  const lastMessage = (messages[messages.length - 1]?.content as string) || '';
+  const wikiContext = await searchWiki(lastMessage);
 
   const systemPrompt = `당신은 면접 준비를 도와주는 AI입니다. 아래 면접위키 문서를 근거로 정확하게 답변하세요.
 - 각 주장에 [번호] 인용을 포함하세요
@@ -115,7 +107,7 @@ export async function POST(req: Request) {
 - 면접에서 어떻게 답하면 좋을지 팁도 포함하세요
 
 ## 면접위키 검색 결과
-${context || '(검색 결과 없음 - 면접위키에 해당 토픽이 없습니다)'}`;
+${wikiContext || '(검색 결과 없음)'}`;
 
   try {
     const response = await fetch(
@@ -138,10 +130,10 @@ ${context || '(검색 결과 없음 - 면접위키에 해당 토픽이 없습니
     );
 
     if (!response.ok) {
-      return new Response(
-        JSON.stringify({ error: `AI 서버 오류: ${response.status}` }),
-        { status: 502, headers: { 'Content-Type': 'application/json' } }
-      );
+      return new Response(JSON.stringify({ error: `AI 서버 오류: ${response.status}` }), {
+        status: 502,
+        headers: { 'Content-Type': 'application/json' },
+      });
     }
 
     const reader = response.body!.getReader();
@@ -151,16 +143,13 @@ ${context || '(검색 결과 없음 - 면접위키에 해당 토픽이 없습니
       async start(controller) {
         const encoder = new TextEncoder();
         let buffer = '';
-
         try {
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
-
             buffer += decoder.decode(value, { stream: true });
             const lines = buffer.split('\n');
             buffer = lines.pop() || '';
-
             for (const line of lines) {
               if (!line.startsWith('data: ')) continue;
               const data = line.slice(6).trim();
@@ -182,12 +171,15 @@ ${context || '(검색 결과 없음 - 면접위키에 해당 토픽이 없습니
     });
 
     return new Response(stream, {
-      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+      headers: {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Access-Control-Allow-Origin': '*',
+      },
     });
   } catch {
-    return new Response(
-      JSON.stringify({ error: 'AI 서버에 연결할 수 없습니다.' }),
-      { status: 503, headers: { 'Content-Type': 'application/json' } }
-    );
+    return new Response(JSON.stringify({ error: 'AI 서버에 연결할 수 없습니다.' }), {
+      status: 503,
+      headers: { 'Content-Type': 'application/json' },
+    });
   }
-}
+};
