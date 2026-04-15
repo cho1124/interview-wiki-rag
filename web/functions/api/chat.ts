@@ -5,7 +5,7 @@ interface Env {
   CF_API_TOKEN: string;
 }
 
-const CF_MODEL = '@cf/meta/llama-3.1-8b-instruct';
+const CF_MODEL = '@cf/qwen/qwen3-30b-a3b';
 const WIKI_SUPABASE_URL = 'https://thomfxtghuszjzsljkyf.supabase.co';
 const WIKI_SUPABASE_KEY = 'sb_publishable_Xgp4YibDvNI8qkghpVwK7g_Q1gs0Ke-';
 
